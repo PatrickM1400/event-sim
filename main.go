@@ -5,9 +5,9 @@ import (
 	"container/list"
 	"fmt"
 	"log"
+	"math"
 	"os"
 	"strconv"
-	"sync"
 
 	"github.com/go-echarts/go-echarts/v2/charts"
 	"github.com/go-echarts/go-echarts/v2/opts"
@@ -22,21 +22,6 @@ var SecondPerTick float64 = 1e-6 // We want million ticks per second
 
 // TicksPerSecond specifies the frequency of the ticker.  Default is 1e9.
 var TicksPerSecond int64 = int64(1.0 / SecondPerTick)
-
-var counter_mu sync.Mutex
-var events_counter int = 0
-var service_mu sync.Mutex
-var file_mu sync.Mutex
-
-var evented_finished int = 0
-
-type EventContext struct {
-	EventTime       vrtime.Time
-	ServiceTime     int64
-	Tagged          bool
-	EventData       *os.File
-	EventDataTagged *os.File
-}
 
 type PktArrivalContext struct {
 	ServiceTime         int64
@@ -84,36 +69,6 @@ func ParseCmd(cmd_parser *cmdline.CmdParser) (float64, int64, int64) {
 	// fmt.Println("Service Time: ", reflect.TypeOf(D_value))
 
 	return p_value, M_value, D_value
-}
-
-func EventHandler(evtmgr *evtm.EventManager, context any, data any) any {
-
-	var file *os.File = context.(EventContext).EventData
-	var file_tagged *os.File = context.(EventContext).EventDataTagged
-	var str string = strconv.Itoa(EventList.Len())
-	file.WriteString(str + "\n")
-	if context.(EventContext).Tagged {
-		file_tagged.WriteString(str + "\n")
-	}
-
-	EventList.PushBack(context)
-
-	for {
-		var tmp_elem *list.Element = EventList.Front()
-		if tmp_elem == nil {
-			break
-		}
-		event_time := tmp_elem.Value.(EventContext).EventTime.TickCnt
-		service_time := tmp_elem.Value.(EventContext).ServiceTime
-		cur_event_time := context.(EventContext).EventTime.TickCnt
-		if event_time+service_time < cur_event_time { //The service time for this event has elapsed
-			EventList.Remove(tmp_elem) //Remove front element
-		} else {
-			break
-		}
-	}
-
-	return nil
 }
 
 /*
@@ -165,13 +120,10 @@ func PktServiceFinishHandler(evtmgr *evtm.EventManager, context any, data any) a
 	return nil
 }
 
-func generateBarItems(num_categories int, file_path string) []opts.BarData {
-	items := make([]opts.BarData, 0)
+func generatePMF(num_categories int, file_path string) []float64 {
+
 	freq_count := make([]float64, num_categories)
 	total_events := float64(0)
-	// for i := 0; i < 1000; i++ {
-	// 	items = append(items, opts.BarData{Value: i})
-	// }
 
 	file, err := os.Open(file_path)
 	if err != nil {
@@ -198,7 +150,28 @@ func generateBarItems(num_categories int, file_path string) []opts.BarData {
 	}
 
 	for i := 0; i < num_categories; i++ {
-		items = append(items, opts.BarData{Value: (freq_count[i] / total_events)})
+		freq_count[i] = freq_count[i] / total_events
+	}
+
+	return freq_count
+}
+
+func generateCDF(num_categories int, file_path string) []float64 {
+
+	distro := generatePMF(num_categories, file_path)
+
+	for i := 1; i < num_categories; i++ {
+		distro[i] += distro[i-1]
+	}
+	return distro
+}
+
+func generateBarItems(num_categories int, file_path string) []opts.BarData {
+	items := make([]opts.BarData, 0)
+	pmf_distribution := generatePMF(num_categories, file_path)
+
+	for i := 0; i < num_categories; i++ {
+		items = append(items, opts.BarData{Value: pmf_distribution[i]})
 	}
 
 	return items
@@ -212,14 +185,11 @@ func main() {
 
 	g1 := rngstream.New("Poisson")
 	g2 := rngstream.New("Tagged")
-	number_events := int(M_value) * 60 //M is given as events per second
-	num_seconds := 60                  // How many seconds simulation lasts
+	num_seconds := 60                           // How many seconds simulation lasts
+	number_events := int(M_value) * num_seconds //M is given as events per second
 	// event_times := make([]int64, number_events)
 
 	evtmgr := evtm.New()
-
-	seed := []uint64{101, 200, 300, 400, 500, 600}
-	rngstream.SetPackageSeed(seed)
 
 	/* Prepare file for data */
 	file, err := os.Create("event_data.txt")
@@ -266,9 +236,7 @@ func main() {
 
 	var max_count int = 0
 	scanner := bufio.NewScanner(file_find_max)
-	// optionally, resize scanner's capacity for lines over 64K, see next example
 	for scanner.Scan() {
-		// fmt.Println(scanner.Text())
 		event_count, err := strconv.Atoi(scanner.Text())
 		if err != nil {
 			fmt.Println("Unable to read from data file")
@@ -302,5 +270,18 @@ func main() {
 	// Where the magic happens
 	f, _ := os.Create("bar.html")
 	bar.Render(f)
+	fmt.Println("\nCreated distibution chart")
 
+	/* Run KS Test */
+	total_cdf := generateCDF(max_count, "event_data.txt")
+	tagged_cdf := generateCDF(max_count, "event_data_tagged.txt")
+	var largest_dist float64 = 0
+
+	for i := 0; i < max_count; i++ {
+		var dist float64 = math.Abs(total_cdf[i] - tagged_cdf[i])
+		if dist > largest_dist {
+			largest_dist = dist
+		}
+	}
+	fmt.Println("KS Statistic: ", largest_dist)
 }
