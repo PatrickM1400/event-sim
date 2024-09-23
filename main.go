@@ -64,9 +64,6 @@ func ParseCmd(cmd_parser *cmdline.CmdParser) (float64, int64, int64) {
 	var D_value int64 = cmd_parser.GetVar("d").(int64)
 
 	fmt.Println("Starting event sim with following parameters")
-	// fmt.Println("Probability of tagged event: ", reflect.TypeOf(p_value))
-	// fmt.Println("Arrival Rate: ", reflect.TypeOf(M_value))
-	// fmt.Println("Service Time: ", reflect.TypeOf(D_value))
 
 	return p_value, M_value, D_value
 }
@@ -95,13 +92,15 @@ func PktArrivalHandler(evtmgr *evtm.EventManager, context any, data any) any {
 		tmp_context := context.(PktArrivalContext)
 		new_context := PktServiceFinishContext{ServiceTime: tmp_context.ServiceTime}
 		EventList.PushBack(new_context)
-		// fmt.Println("Event added to queue")
 	}
 
-	// fmt.Println("Arrival Packet")
 	return nil
 }
 
+/*
+The event when a packet is finished being serviced
+If another packet is in queue, immedately sets event for when next packet finishes service
+*/
 func PktServiceFinishHandler(evtmgr *evtm.EventManager, context any, data any) any {
 
 	event_element := EventList.Front()
@@ -116,7 +115,6 @@ func PktServiceFinishHandler(evtmgr *evtm.EventManager, context any, data any) a
 		}
 	}
 
-	// fmt.Println("Packet finished")
 	return nil
 }
 
@@ -180,6 +178,7 @@ func generateBarItems(num_categories int, file_path string) []opts.BarData {
 
 func main() {
 
+	vrtime.SetTicksPerSecond(int64(1e6))
 	cmd_parser := cmdline.NewCmdParser()
 	p_value, M_value, D_value := ParseCmd(cmd_parser)
 
@@ -187,7 +186,6 @@ func main() {
 	g2 := rngstream.New("Tagged")
 	num_seconds := 60                           // How many seconds simulation lasts
 	number_events := int(M_value) * num_seconds //M is given as events per second
-	// event_times := make([]int64, number_events)
 
 	evtmgr := evtm.New()
 
@@ -203,7 +201,6 @@ func main() {
 		panic(err)
 	}
 
-	// var service_time time.Duration = time.Duration(D_value)
 	var ticks_in_simulation int = int(TicksPerSecond) * num_seconds
 
 	for i := 0; i < number_events; i++ {
@@ -216,15 +213,10 @@ func main() {
 		evtmgr.Schedule(tmp_context, nil, PktArrivalHandler, tmp_time)
 	}
 
-	fmt.Println(number_events, " events scheduled")
-
-	// fmt.Println(event_times)
-	// slices.Sort(event_times)
-	// fmt.Println(event_times)
-
+	fmt.Println("Number of events scheduled: ", number_events)
 	fmt.Println("Probability of tagged event: ", p_value)
 	fmt.Println("Arrival Rate in events/sec: ", M_value)
-	fmt.Println("Service Time in ms: ", D_value)
+	fmt.Println("Service Time in microseconds: ", D_value)
 
 	evtmgr.Run(float64(ticks_in_simulation))
 
@@ -270,7 +262,7 @@ func main() {
 	// Where the magic happens
 	f, _ := os.Create("bar.html")
 	bar.Render(f)
-	fmt.Println("\nCreated distibution chart")
+	fmt.Println("\nCreated distibution chart in", f.Name())
 
 	/* Run KS Test */
 	total_cdf := generateCDF(max_count, "event_data.txt")
